@@ -1,18 +1,20 @@
-# Local OpenAI-compat prompt bridge (tokenize pressure + overflow → compact-retry).
-# Works against stock official DSH — does not replace llm-pi-ai / token-meter / compaction-basic.
+# Stock-safe community plugin: local OpenAI-compat tokenize pressure + overflow → compact-retry.
+# Does not replace llm-pi-ai / token-meter / compaction-basic.
+#
+# Defaults are provider-neutral:
+# - rewriteOverflow applies to EVERY llm/stream (no route list required)
+# - proactiveCompact only runs for entries you list under `routes`
+# Align each route's provider / baseURL / contextWindow with your llm-pi-ai providers.
 - insert:
     - id: local-prompt-bridge
       name: "@local/dsh-plugin-local-prompt-bridge"
       config:
-        # Match your cordis.patch.yml provider ids that speak llama.cpp /tokenize.
-        routes:
-          - provider: llama-cpp-bonsai2
-            baseURL: http://127.0.0.1:18200/v1
-            contextWindow: 65536
-          # Add more local routes the same way, e.g.:
-          # - provider: llama-cpp-qwen35b
-          #   baseURL: http://127.0.0.1:8083/v1
-          #   contextWindow: 131072
+        # Empty by default — fill with YOUR local OpenAI-compat routes, e.g.:
+        # routes:
+        #   - provider: llama-cpp-local
+        #     baseURL: http://127.0.0.1:8080/v1
+        #     contextWindow: 65536
+        routes: []
         thresholdRatio: 0.75
         tokenizeEndpoint: /tokenize
         templateEndpoint: /apply-template

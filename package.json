@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-plugin-local-prompt-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Stock-safe DSH plugin: HTTP tokenize pressure + llama.cpp overflow → CONTEXT_WINDOW_EXCEEDED compact-retry. Community dsh-plugin; does not patch @deepseek-ai packages.",
   "type": "module",

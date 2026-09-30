@@ -55,7 +55,9 @@ https://github.com/tianyiming1/dsh-plugin-local-prompt-bridge
 
 Topic: `dsh-plugin`. Install: `pnpm add github:tianyiming1/dsh-plugin-local-prompt-bridge` then add `@local/dsh-plugin-local-prompt-bridge` to profile `bundles`.
 
-Verified on official DSH desktop path + 64K llama.cpp (Bonsai): tokenize max above threshold → synthesized `CONTEXT_WINDOW_EXCEEDED` → stock compact-retry recovered session (~56k → ~18k).
+Defaults ship with empty `routes` and **global** overflow rewrite (no personal model/port hard-coded). Proactive tokenize is opt-in per route in the installer's profile.
+
+Verified on official DSH desktop path + one local 64K llama.cpp route: tokenize max above threshold → synthesized `CONTEXT_WINDOW_EXCEEDED` → stock compact-retry recovered session (~56k → ~18k).
 
 ## Ask
 

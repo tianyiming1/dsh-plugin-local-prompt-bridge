@@ -19,22 +19,26 @@ export const inject = []
  */
 export function apply(ctx, rawConfig = {}) {
   const config = normalizeConfig(rawConfig)
-  if (config.routes.length === 0) {
-    console.error('[local-prompt-bridge] no routes configured; plugin idle')
+  if (!config.rewriteOverflow && !(config.proactiveCompact && config.routes.length > 0)) {
+    console.error('[local-prompt-bridge] rewrite and proactive both off / no routes; plugin idle')
     return
   }
 
+  const proactiveTargets = config.routes.map(r => r.provider).join(', ') || '(none)'
   console.error(
-    `[local-prompt-bridge] active for ${config.routes.map(r => r.provider).join(', ')} `
-    + `(rewrite=${config.rewriteOverflow}, proactive=${config.proactiveCompact}, threshold=${config.thresholdRatio})`,
+    `[local-prompt-bridge] active `
+    + `(rewrite=${config.rewriteOverflow ? 'all-providers' : 'off'}, `
+    + `proactive=${config.proactiveCompact ? proactiveTargets : 'off'}, `
+    + `threshold=${config.thresholdRatio})`,
   )
 
   ctx.on('llm/stream', (options, next) => {
     const route = matchRoute(config.routes, options.provider, options.model)
-    if (route === undefined) return next()
+    // Rewrite is global (any provider). Proactive tokenize needs an explicit route.
+    if (!config.rewriteOverflow && route === undefined) return next()
 
     return (async function* () {
-      if (config.proactiveCompact) {
+      if (config.proactiveCompact && route !== undefined) {
         try {
           const blocked = await maybeBlockOverThreshold(config, route, options)
           if (blocked !== undefined) {
