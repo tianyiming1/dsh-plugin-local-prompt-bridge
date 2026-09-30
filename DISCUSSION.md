@@ -1,6 +1,6 @@
 # [Proposal] Provider-neutral prompt token pressure + local overflow → compact-retry
 
-> Status: community plugin available now (`dsh-plugin` v0.1.3); core protocol sketched for when external PRs are accepted again.
+> Status: community plugin available now (`dsh-plugin` v0.1.4); core protocol sketched for when external PRs are accepted again.
 > Related: CONTRIBUTING currently declines external PRs — filing this as a Discussion per project guidance.
 
 ## Problem
@@ -14,7 +14,7 @@ request (N tokens) exceeds the available context size (n_ctx)
 
 Two gaps follow:
 
-1. **Proactive compaction** trusts the undercount → pressure never fires in time.
+1. **Proactive compaction** trusts the undercount → pressure never fires in time (or fires on the wrong signal).
 2. **Overflow recovery** already exists (`agent/request-error` + `CONTEXT_WINDOW_EXCEEDED` → compact → retry), but bare HTTP 400 + `exceed_context_size*` is often classified as `INVALID_REQUEST`, so the recovery path never runs.
 
 Reproduced on local 64K llama.cpp routes with Chinese-heavy agent sessions (heuristic far below window, server reports prompt over `n_ctx`).
@@ -39,26 +39,20 @@ countPromptTokens?(options: GenerateOptions, signal?: AbortSignal): Promise<Toke
 
 This stays provider-neutral: DeepSeek cloud, gateways, and local servers can each implement the method; core never hard-codes `/tokenize` or llama.cpp.
 
-### Soft vs hard pressure (lesson from the community plugin)
+### Production-aligned pressure (Cursor / Codex / Claude Code)
 
-Faking `CONTEXT_WINDOW_EXCEEDED` on every soft threshold (e.g. `0.45 × n_ctx`) is **unsafe** when the excess is mostly **this-turn tool/file payloads**:
+These products manage **conversation token budgets**, not a client-side “remaining KV %” gauge:
 
-1. Agent reads large files → precise count e.g. 40k on a 64k window
-2. Soft threshold 29k → synthesize `CONTEXT_WINDOW_EXCEEDED` → stock compact-retry
-3. Compaction shrinks **history**, not the current tool results
-4. Count still ~40k > soft → synthesize again → retries exhaust → turn fails
-5. Meanwhile 40k **still fits** the real window
-
-So any core `countPromptTokens` + proactive path should distinguish:
-
-| Band | Suggested behavior |
+| Layer | Behavior |
 |---|---|
-| `≤ soft` (e.g. 0.75) | normal |
-| `soft < n ≤ hard` (e.g. 0.90) | optional early compact of **history only**; **do not** fail the turn |
-| `> hard` | `CONTEXT_WINDOW_EXCEEDED` / compact-retry |
-| provider `exceed_context_size*` | always map to `CONTEXT_WINDOW_EXCEEDED` |
+| Accurate / reported usage | Know how large the active prompt is |
+| Proactive compact ~90% of window | Summarize / shrink history before the hard edge |
+| Hard overflow | Map provider context errors → compact-retry |
+| Large tool payloads | Prefer truncate / spill to files (product-side); do not fake-overflow at 45% |
 
-Community plugin v0.1.3: soft synthesizes overflow **only when estimated removable history could land under soft**; otherwise allows. Hard uses `min(hardRatio × window, window − outputReserve)` so generation keeps a budget.
+Early fake-`CONTEXT_WINDOW_EXCEEDED` at a low soft ratio (e.g. 0.45) is unsafe when this-turn tool/file payloads dominate: compact cannot shrink them, retries exhaust, and the turn fails while the real window still has room (observed ~40k on a 64k local route).
+
+Community plugin **v0.1.4** matches the ~90% pattern: tokenize the outgoing prompt; compact only when `promptTokens > min(thresholdRatio × window, window − outputReserve)`; otherwise allow; always rewrite llama.cpp overflow.
 
 ## What the community can use today
 
@@ -66,7 +60,7 @@ While external PRs are closed, a stock-safe **plugin** implements the operationa
 
 - `llm/stream` rewrite of overflow-like finish errors → `CONTEXT_WINDOW_EXCEEDED`
 - HTTP tokenize against configured `baseURL` before dispatch
-- Soft pressure: log + allow; hard pressure: synthesize `CONTEXT_WINDOW_EXCEEDED` for stock compact-retry
+- Compact trigger default `thresholdRatio: 0.90` + `outputReserve: 4096`
 
 Install shape: npm/`link:` bundle with `dsh.bundle.patch`, topic `dsh-plugin`.
 
@@ -84,7 +78,7 @@ Verified on official DSH desktop/web path + local 64K llama.cpp routes (Bonsai2 
 
 1. Is the optional `countPromptTokens` seam acceptable for a future core change?
 2. Can overflow classification for `exceed_context_size*` land even sooner (small, high leverage)?
-3. Please treat soft vs hard pressure as part of the design — soft fake-overflow loops are a footgun when tool payloads dominate.
+3. Please align any proactive path with industry ~90% / fit-before-send semantics — avoid low soft fake-overflow loops on tool-heavy turns.
 4. Until then, any objection to documenting the community plugin pattern for local OpenAI-compat tokenize?
 
-Happy to split into: (a) overflow classifier only, (b) protocol + meter + soft/hard bands, (c) reference adapter opt-in — whenever external contributions reopen.
+Happy to split into: (a) overflow classifier only, (b) protocol + meter + ~90% compact trigger, (c) reference adapter opt-in — whenever external contributions reopen.

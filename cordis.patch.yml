@@ -5,6 +5,7 @@
 # - rewriteOverflow applies to EVERY llm/stream (no route list required)
 # - proactiveCompact only runs for entries you list under `routes`
 # Align each route's provider / baseURL / contextWindow with your llm-pi-ai providers.
+# Compact trigger defaults to ~90% of window (Cursor/Codex-style), minus outputReserve.
 - insert:
     - id: local-prompt-bridge
       name: "@local/dsh-plugin-local-prompt-bridge"
@@ -15,8 +16,7 @@
         #     baseURL: http://127.0.0.1:8080/v1
         #     contextWindow: 65536
         routes: []
-        thresholdRatio: 0.75
-        hardRatio: 0.90
+        thresholdRatio: 0.90
         outputReserve: 4096
         tokenizeEndpoint: /tokenize
         templateEndpoint: /apply-template

@@ -2,12 +2,11 @@
  * @local/dsh-plugin-local-prompt-bridge
  *
  * Stock-safe community plugin for local OpenAI-compat servers (llama.cpp etc.):
- * 1) Rewrite overflow 400s → CONTEXT_WINDOW_EXCEEDED
- * 2) Before dispatch, HTTP-tokenize (max of messages + apply-template/content):
- *    Soft band: synthesize CONTEXT_WINDOW_EXCEEDED only when estimated *history*
- *    is large enough that compact could land under soft; otherwise allow
- *    (this-turn files/tools cannot be compacted — avoids fail loops).
- *    Hard band: always synthesize, with outputReserve kept free for generation.
+ * 1) Rewrite overflow 400s → CONTEXT_WINDOW_EXCEEDED (Cursor/Codex-style recovery)
+ * 2) Before dispatch, HTTP-tokenize the outgoing prompt; if it exceeds
+ *    min(thresholdRatio × window, window − outputReserve) (default ~90%),
+ *    synthesize CONTEXT_WINDOW_EXCEEDED so stock compaction can shrink history
+ *    and retry. Below that limit, allow dispatch (no soft fake-overflow).
  */
 
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
@@ -32,12 +31,11 @@ export function apply(ctx, rawConfig = {}) {
     `[local-prompt-bridge] active `
     + `(rewrite=${config.rewriteOverflow ? 'all-providers' : 'off'}, `
     + `proactive=${config.proactiveCompact ? proactiveTargets : 'off'}, `
-    + `soft=${config.thresholdRatio}, hard=${config.hardRatio}, reserve=${config.outputReserve})`,
+    + `compactAt=${config.thresholdRatio}, reserve=${config.outputReserve})`,
   )
 
   ctx.on('llm/stream', (options, next) => {
     const route = matchRoute(config.routes, options.provider, options.model)
-    // Rewrite is global (any provider). Proactive tokenize needs an explicit route.
     if (!config.rewriteOverflow && route === undefined) return next()
 
     return (async function* () {
@@ -71,21 +69,22 @@ function normalizeConfig(raw) {
       && Number.isFinite(r?.contextWindow)
       && r.contextWindow > 0)
     : []
-  // Soft: history-compact only when it can help. Hard: leave outputReserve free.
-  const thresholdRatio = typeof raw.thresholdRatio === 'number' && raw.thresholdRatio > 0 && raw.thresholdRatio <= 1
+  // Industry-aligned default (~Cursor/Codex ~90%). Prefer thresholdRatio;
+  // hardRatio is accepted as a legacy alias if thresholdRatio omitted.
+  let thresholdRatio = typeof raw.thresholdRatio === 'number' && raw.thresholdRatio > 0 && raw.thresholdRatio <= 1
     ? raw.thresholdRatio
-    : 0.75
-  let hardRatio = typeof raw.hardRatio === 'number' && raw.hardRatio > 0 && raw.hardRatio <= 1
-    ? raw.hardRatio
-    : 0.90
-  if (hardRatio < thresholdRatio) hardRatio = thresholdRatio
+    : undefined
+  if (thresholdRatio === undefined) {
+    thresholdRatio = typeof raw.hardRatio === 'number' && raw.hardRatio > 0 && raw.hardRatio <= 1
+      ? raw.hardRatio
+      : 0.90
+  }
   const outputReserve = typeof raw.outputReserve === 'number' && raw.outputReserve >= 0
     ? Math.floor(raw.outputReserve)
     : 4096
   return {
     routes,
     thresholdRatio,
-    hardRatio,
     outputReserve,
     tokenizeEndpoint: typeof raw.tokenizeEndpoint === 'string' ? raw.tokenizeEndpoint : '/tokenize',
     templateEndpoint: typeof raw.templateEndpoint === 'string' ? raw.templateEndpoint : '/apply-template',
@@ -123,49 +122,25 @@ async function maybeBlockOverThreshold(config, route, options) {
     options.signal,
   )
 
-  const soft = Math.floor(route.contextWindow * config.thresholdRatio)
   const reserve = resolveOutputReserve(config, options)
-  const hardByRatio = Math.floor(route.contextWindow * config.hardRatio)
-  const hardByReserve = Math.max(1, route.contextWindow - reserve)
-  const hard = Math.min(hardByRatio, hardByReserve)
-
-  const historyTokensEst = estimateRemovableHistoryTokens(messages)
-  const withoutHistory = Math.max(0, counted.promptTokens - historyTokensEst)
+  const byRatio = Math.floor(route.contextWindow * config.thresholdRatio)
+  const byReserve = Math.max(1, route.contextWindow - reserve)
+  // Proactive compact near ~90%; never allow a send that leaves no room for output.
+  const compactAt = Math.min(byRatio, byReserve)
 
   console.error(
     `[local-prompt-bridge] tokenize msg=${counted.messagesCount ?? '?'} content=${counted.contentCount ?? '?'} `
-    + `max=${counted.promptTokens} soft=${soft} hard=${hard} reserve=${reserve} `
-    + `histEst=${historyTokensEst} withoutHist=${withoutHistory} window=${route.contextWindow}`,
+    + `max=${counted.promptTokens} compactAt=${compactAt} reserve=${reserve} window=${route.contextWindow}`,
   )
 
-  if (counted.promptTokens <= soft) return undefined
-
-  if (counted.promptTokens <= hard) {
-    // Soft band: only fake-overflow when compacting *history* could land under soft.
-    // If withoutHistory is still > soft, the bulk is this-turn files/tools — allow.
-    if (withoutHistory <= soft && historyTokensEst >= Math.max(512, Math.floor(soft * 0.1))) {
-      console.error(
-        `[local-prompt-bridge] soft pressure ${counted.promptTokens} in (${soft},${hard}]; `
-        + `history≈${historyTokensEst} looks compressible → ${CONTEXT_WINDOW_EXCEEDED_CODE}`,
-      )
-      return overflowFinish(
-        `local-prompt-bridge: prompt ${counted.promptTokens} tokens over soft ${soft}; `
-        + `requesting history compact (est. removable ≈${historyTokensEst})`,
-      )
-    }
-    console.error(
-      `[local-prompt-bridge] soft pressure ${counted.promptTokens} in (${soft},${hard}]; `
-      + `payload-dominated (withoutHist=${withoutHistory}>soft) → allow`,
-    )
-    return undefined
-  }
+  if (counted.promptTokens <= compactAt) return undefined
 
   console.error(
-    `[local-prompt-bridge] hard pressure ${counted.promptTokens} > ${hard} `
+    `[local-prompt-bridge] prompt ${counted.promptTokens} > compactAt ${compactAt} `
     + `(window ${route.contextWindow}, reserve ${reserve}); synthesizing ${CONTEXT_WINDOW_EXCEEDED_CODE}`,
   )
   return overflowFinish(
-    `local-prompt-bridge: prompt ${counted.promptTokens} tokens exceeds hard threshold ${hard} `
+    `local-prompt-bridge: prompt ${counted.promptTokens} tokens exceeds compact threshold ${compactAt} `
     + `of context window ${route.contextWindow} (reserve ${reserve})`,
   )
 }
@@ -185,7 +160,6 @@ function overflowFinish(message) {
 }
 
 /**
- * Leave room for completion. Prefer explicit option, else config.outputReserve.
  * @param {ReturnType<typeof normalizeConfig>} config
  * @param {any} options
  */
@@ -193,36 +167,6 @@ function resolveOutputReserve(config, options) {
   const fromOpt = Number(options?.maxTokens ?? options?.max_tokens)
   if (Number.isFinite(fromOpt) && fromOpt > 0) return Math.max(config.outputReserve, Math.floor(fromOpt))
   return config.outputReserve
-}
-
-/**
- * Rough upper bound on tokens that stock history-compact can remove:
- * everything before the latest user message (prior turns + their tool results).
- * Char/2 overestimates CJK tokens so we under-trigger soft compact (safer vs loops).
- * @param {readonly any[]} messages
- */
-function estimateRemovableHistoryTokens(messages) {
-  let lastUser = -1
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') {
-      lastUser = i
-      break
-    }
-  }
-  if (lastUser <= 0) return 0
-  let chars = 0
-  for (let i = 0; i < lastUser; i++) {
-    const m = messages[i]
-    if (!m || m.role === 'system') continue
-    chars += typeof m.content === 'string' ? m.content.length : 0
-    if (Array.isArray(m.tool_calls)) {
-      for (const call of m.tool_calls) {
-        const args = call?.function?.arguments
-        if (typeof args === 'string') chars += args.length
-      }
-    }
-  }
-  return Math.ceil(chars / 2)
 }
 
 /** @param {any} chunk */
@@ -270,7 +214,6 @@ function toWireMessages(messages) {
       })
       continue
     }
-    // dsh / pi-ai tool results
     if (role === 'tool' || role === 'toolResult' || role === 'tool_result') {
       out.push({
         role: 'tool',
