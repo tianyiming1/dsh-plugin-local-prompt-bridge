@@ -1,0 +1,44 @@
+{
+  "name": "@local/dsh-plugin-local-prompt-bridge",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Stock-safe DSH plugin: HTTP tokenize pressure + llama.cpp overflow → CONTEXT_WINDOW_EXCEEDED compact-retry. Community dsh-plugin; does not patch @deepseek-ai packages.",
+  "type": "module",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tianyiming1/dsh-plugin-local-prompt-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tianyiming1/dsh-plugin-local-prompt-bridge/issues"
+  },
+  "homepage": "https://github.com/tianyiming1/dsh-plugin-local-prompt-bridge#readme",
+  "license": "MIT",
+  "author": "tianyiming1",
+  "files": [
+    "index.js",
+    "tokenize.js",
+    "cordis.patch.yml",
+    "README.md",
+    "DISCUSSION.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "tokenize",
+    "compaction"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-compaction": "*"
+  }
+}
