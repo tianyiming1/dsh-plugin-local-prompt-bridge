@@ -17,6 +17,7 @@
         routes: []
         thresholdRatio: 0.75
         hardRatio: 0.90
+        outputReserve: 4096
         tokenizeEndpoint: /tokenize
         templateEndpoint: /apply-template
         rewriteOverflow: true

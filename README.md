@@ -11,9 +11,9 @@
 ## 做什么
 
 1. **溢出改写（默认对所有 provider）**：把 `exceed_context_size_error` / 「超过 context」类 400，改成 `CONTEXT_WINDOW_EXCEEDED`，交给官方 `compaction-basic` 压缩再试。
-2. **主动精算（需配置 routes）**：步进前对列出的路由打 `/tokenize`（失败则 `/apply-template` → content）。
-   - 超过 `thresholdRatio`（软线）：只打日志，**放行**（避免本轮大文件压不掉却假报超窗、重试耗尽）。
-   - 超过 `hardRatio`（硬线，默认 0.90）：才合成 `CONTEXT_WINDOW_EXCEEDED` 触发压缩重试。
+2. **主动精算（需配置 routes）**：步进前 `/tokenize`（失败则 `/apply-template` → content）。
+   - **软线** `thresholdRatio`：仅当「去掉历史后能落到软线以下」时才合成溢出去压**历史**；本轮大文件主导则放行（避免压不掉却重试耗尽）。
+   - **硬线** `min(hardRatio × window, window − outputReserve)`：为生成预留 `outputReserve`（默认 4096，或 `maxTokens` 更大时取更大），超了再合成溢出。
    - 真撞上 llama.cpp 上限仍靠第 1 条改写兜底。
 
 默认 `routes: []`——**不绑定任何个人模型 / 端口**。装上即可获得全局溢出改写；主动压缩请按你自己的 `llm-pi-ai` provider 填写。
@@ -52,6 +52,7 @@ pnpm add link:D:/deepseek-harness-workspace/dsh-plugin-local-prompt-bridge
         contextWindow: 65536
     thresholdRatio: 0.75
     hardRatio: 0.90
+    outputReserve: 4096
 ```
 
 也可直接编辑本包 `cordis.patch.yml`（仅本地 fork / link 时）。

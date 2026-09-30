@@ -1,6 +1,6 @@
 # [Proposal] Provider-neutral prompt token pressure + local overflow → compact-retry
 
-> Status: community plugin available now (`dsh-plugin` v0.1.2); core protocol sketched for when external PRs are accepted again.
+> Status: community plugin available now (`dsh-plugin` v0.1.3); core protocol sketched for when external PRs are accepted again.
 > Related: CONTRIBUTING currently declines external PRs — filing this as a Discussion per project guidance.
 
 ## Problem
@@ -58,7 +58,7 @@ So any core `countPromptTokens` + proactive path should distinguish:
 | `> hard` | `CONTEXT_WINDOW_EXCEEDED` / compact-retry |
 | provider `exceed_context_size*` | always map to `CONTEXT_WINDOW_EXCEEDED` |
 
-Community plugin v0.1.2 implements this split (`thresholdRatio` = soft log-only, `hardRatio` = synthesize).
+Community plugin v0.1.3: soft synthesizes overflow **only when estimated removable history could land under soft**; otherwise allows. Hard uses `min(hardRatio × window, window − outputReserve)` so generation keeps a budget.
 
 ## What the community can use today
 
