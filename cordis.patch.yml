@@ -16,6 +16,7 @@
         #     contextWindow: 65536
         routes: []
         thresholdRatio: 0.75
+        hardRatio: 0.90
         tokenizeEndpoint: /tokenize
         templateEndpoint: /apply-template
         rewriteOverflow: true

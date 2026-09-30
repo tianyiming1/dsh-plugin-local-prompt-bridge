@@ -4,7 +4,9 @@
  * Stock-safe community plugin for local OpenAI-compat servers (llama.cpp etc.):
  * 1) Rewrite overflow 400s → CONTEXT_WINDOW_EXCEEDED
  * 2) Before dispatch, HTTP-tokenize (max of messages + apply-template/content);
- *    if over threshold, synthesize CONTEXT_WINDOW_EXCEEDED for stock compact-retry
+ *    Soft threshold: log only (do not fake-fail — uncompressible tool/file
+ *    payloads would loop compact→still-over→fail while window still has room).
+ *    Hard threshold: synthesize CONTEXT_WINDOW_EXCEEDED for stock compact-retry.
  */
 
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
@@ -29,7 +31,7 @@ export function apply(ctx, rawConfig = {}) {
     `[local-prompt-bridge] active `
     + `(rewrite=${config.rewriteOverflow ? 'all-providers' : 'off'}, `
     + `proactive=${config.proactiveCompact ? proactiveTargets : 'off'}, `
-    + `threshold=${config.thresholdRatio})`,
+    + `soft=${config.thresholdRatio}, hard=${config.hardRatio})`,
   )
 
   ctx.on('llm/stream', (options, next) => {
@@ -68,13 +70,19 @@ function normalizeConfig(raw) {
       && Number.isFinite(r?.contextWindow)
       && r.contextWindow > 0)
     : []
-  // 0.75 leaves headroom for undercount / tool schemas the wire may still add.
+  // Soft: warn only. Hard: fake CONTEXT_WINDOW_EXCEEDED for compact-retry.
+  // Default hard 0.90 leaves room for completion; soft 0.75 is informational.
   const thresholdRatio = typeof raw.thresholdRatio === 'number' && raw.thresholdRatio > 0 && raw.thresholdRatio <= 1
     ? raw.thresholdRatio
     : 0.75
+  let hardRatio = typeof raw.hardRatio === 'number' && raw.hardRatio > 0 && raw.hardRatio <= 1
+    ? raw.hardRatio
+    : 0.90
+  if (hardRatio < thresholdRatio) hardRatio = thresholdRatio
   return {
     routes,
     thresholdRatio,
+    hardRatio,
     tokenizeEndpoint: typeof raw.tokenizeEndpoint === 'string' ? raw.tokenizeEndpoint : '/tokenize',
     templateEndpoint: typeof raw.templateEndpoint === 'string' ? raw.templateEndpoint : '/apply-template',
     rewriteOverflow: raw.rewriteOverflow !== false,
@@ -111,15 +119,27 @@ async function maybeBlockOverThreshold(config, route, options) {
     options.signal,
   )
 
-  const threshold = Math.floor(route.contextWindow * config.thresholdRatio)
+  const soft = Math.floor(route.contextWindow * config.thresholdRatio)
+  const hard = Math.floor(route.contextWindow * config.hardRatio)
   console.error(
     `[local-prompt-bridge] tokenize msg=${counted.messagesCount ?? '?'} content=${counted.contentCount ?? '?'} `
-    + `max=${counted.promptTokens} threshold=${threshold}`,
+    + `max=${counted.promptTokens} soft=${soft} hard=${hard} window=${route.contextWindow}`,
   )
-  if (counted.promptTokens <= threshold) return undefined
+  if (counted.promptTokens <= soft) return undefined
+
+  // Between soft and hard: still fits the real window. Do not fake-fail —
+  // history compact cannot shrink this-turn file/tool payloads, and would
+  // loop until overflow retries are exhausted (the 40k/64k screenshot bug).
+  if (counted.promptTokens <= hard) {
+    console.error(
+      `[local-prompt-bridge] soft pressure ${counted.promptTokens} in (${soft},${hard}]; `
+      + `allowing dispatch (real overflow still rewritten to ${CONTEXT_WINDOW_EXCEEDED_CODE})`,
+    )
+    return undefined
+  }
 
   console.error(
-    `[local-prompt-bridge] precise ${counted.promptTokens} > ${threshold} `
+    `[local-prompt-bridge] hard pressure ${counted.promptTokens} > ${hard} `
     + `(window ${route.contextWindow}); synthesizing ${CONTEXT_WINDOW_EXCEEDED_CODE} for stock compact-retry`,
   )
   return {
@@ -128,7 +148,7 @@ async function maybeBlockOverThreshold(config, route, options) {
       kind: 'error',
       failure: {
         code: CONTEXT_WINDOW_EXCEEDED_CODE,
-        message: `local-prompt-bridge: prompt ${counted.promptTokens} tokens exceeds threshold ${threshold} of context window ${route.contextWindow}`,
+        message: `local-prompt-bridge: prompt ${counted.promptTokens} tokens exceeds hard threshold ${hard} of context window ${route.contextWindow}`,
       },
     },
   }
